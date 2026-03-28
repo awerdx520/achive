@@ -298,8 +298,13 @@ FIELDS: list of field index."
   (format "%dW" (/ (string-to-number (nth 10 list)) 10000)))
 
 (defun achive-valid-entry-p (entry)
-  "Check ENTRY data of valid."
-  (not (string= (aref (cadr entry) 1) "-")))
+  "Check ENTRY data of valid.
+ENTRY can be either (CODE DATA) list or data vector."
+  (condition-case nil
+      (if (vectorp entry)
+          (not (string= (aref entry 1) "-"))
+        (not (string= (aref (cadr entry) 1) "-")))
+    (error nil)))
 
 
 (defun achive-working-time-p (buffer-name)
@@ -314,7 +319,6 @@ FIELDS: list of field index."
                  when (and market (achive-market-trading-hours-p market))
                  return t))
     nil))
-
 
 (defun achive-weekday-p ()
   "Whether it is weekend or not."
@@ -621,14 +625,32 @@ CODES: 股票代码字符串，多个代码用空格分隔。
                              (unless resp
                                (message "未找到股票数据，请检查代码是否正确"))
                              (when resp
-                               (message "搜索完成。使用 '+' 键添加股票到主列表，或使用 achive-add 命令。"))))))
-
+                                                               (message "搜索完成。使用 '+' 键添加当前股票到主列表，或使用 achive-add 命令添加多个代码。"))))))
 
 ;;;###autoload
+(defun achive-current-code ()
+  "获取当前行的股票代码。
+如果在 `achive-visual-mode' 缓冲区中，返回当前行对应的股票代码字符串。
+否则返回 nil。"
+  (when (derived-mode-p 'achive-visual-mode)
+    (cond
+     ((fboundp 'tabulated-list-get-id)
+      (tabulated-list-get-id))
+     (t
+      (let ((entry (tabulated-list-get-entry)))
+        (when entry
+          (cond
+           ((consp entry) (car entry))
+           ((vectorp entry) (aref entry 0))
+           (t nil))))))))
+
 (defun achive-add (codes)
-  "Add stocks by codes.
-CODES: string of stocks list."
-  (interactive "s请输入要添加的股票代码: ")
+  "添加股票代码到主列表。
+不带前缀参数时，添加当前行的股票代码；带前缀参数时，提示输入股票代码（多个代码用空格分隔）。"
+  (interactive (list (if current-prefix-arg
+                         (read-string "请输入要添加的股票代码: ")
+                       (or (achive-current-code)
+                           (read-string "请输入要添加的股票代码: ")))))
   (setq codes (seq-filter (lambda (code) (and code (not (string-empty-p code)))) (split-string codes)))
   (if (null codes)
       (message "请输入有效的股票代码")
@@ -644,7 +666,6 @@ CODES: string of stocks list."
                                                                       (message "已添加: [%s]"
                                                                                (mapconcat 'identity valid-codes ", "))))))
                                        (message "未找到有效的股票代码"))))))
-
 
 ;;;###autoload
 (defun achive-remove ()
