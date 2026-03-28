@@ -34,11 +34,9 @@
 
 (require 'cl-lib)
 (require 'url)
-(require 'achive-utils)
 
 
 (defvar url-http-response-status 0)
-
 
 ;;;; Customization
 
@@ -132,6 +130,13 @@ If it's nil will be low-key, you can peek at it at company time."
   "Index or fucntion of each piece of data.")
 
 
+(defmacro achive-number-sort (index)
+  "Create value of number sorting by INDEX."
+  `(lambda (a b)
+     (let ((get-percent-number (lambda (arg)
+                                 (string-to-number (aref (cadr arg) ,index)))))
+       (> (funcall get-percent-number a) (funcall get-percent-number b)))))
+
 (defconst achive-visual-columns (vector
                                  '("股票代码" 8 nil)
                                  '("名称" 10 nil)
@@ -168,31 +173,256 @@ If it's nil will be low-key, you can peek at it at company time."
 
 ;;;;; functions
 
+(defun achive-make-percent (price yestclose open)
+  "Get stocks percent by (PRICE - YESTCLOSE) / YESTCLOSE, Return \"+/- xx%\".
+If OPEN is \"0.00\", percent just is 0.00%."
+  (if (zerop open)
+      "0.00%"
+    (unless (floatp price)
+      (setq price (float price)))
+    (unless (floatp yestclose)
+      (setq yestclose (float yestclose)))
+    (let ((result (/ (- price yestclose)
+                     (if (zerop yestclose)
+                         1.0 yestclose))))
+      (format "%s%0.2f%%" (if (> result 0) "+" "") (* result 100)))))
+
+
+(defmacro achive-set-timeout (callback seconds)
+  "Like `setTimeout' for javascript.
+CALLBACK: callback function.
+SECONDS: integer of seconds."
+  `(let ((timer))
+     (setq timer (run-with-timer ,seconds nil (lambda ()
+                                                (cancel-timer timer)
+                                                (funcall ,callback timer))))))
+
+
+(defun achive-time-list-index (word)
+  "Get index of time list by WORD."
+  (let ((words '("seconds" "minutes" "hour" "day" "month" "year" "dow" "dst" "zone")))
+    (cl-position word words :test 'equal)))
+
+
+(defun achive-decoded-time (time word)
+  "Like decoded-time-xxx(Emacs '27.1').
+Get TIME object item by WORD."
+  (nth (achive-time-list-index word) time))
+
+
+(defun achive-time-number (str)
+  "STR of '12:00' to integer of 1200."
+  (if (stringp str)
+      (string-to-number (replace-regexp-in-string (regexp-quote ":") "" str))
+    0))
+
+
+(defun achive-hhmm-to-time (hhmm &optional func)
+  "Convert HHMM to time.
+Callback FUNC is handle to time list."
+  (if (stringp hhmm)
+      (setq hhmm (achive-time-number hhmm)))
+  (let* ((now (decode-time))
+         (time-code (list 0 (% hhmm 100) (/ hhmm 100)
+                          (achive-decoded-time now "day")
+				          (achive-decoded-time now "month")
+                          (achive-decoded-time now "year")
+                          (achive-decoded-time now "zone"))))
+    (if (functionp func)
+        (setq time-code (funcall func time-code)))
+    (apply #'encode-time time-code)))
+
+
+(defun achive-compare-time (hhmm)
+  "Compare now and HHMM.
+If now less than time return t."
+  (let ((now (current-time))
+        (time (achive-hhmm-to-time hhmm)))
+    (time-less-p now time)))
+
+
+(defun achive-readcache (path)
+  "Read cache file of stock codes.
+PATH: path of file dir."
+  (if (file-exists-p path)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (read (current-buffer)))))
+
+
+(defun achive-writecache (path codes)
+  "Write stock codes to cache file.
+PATH: path of file dir.
+CODES: list of stock codes."
+  (with-temp-file path
+    (prin1 codes (current-buffer))))
+
+
+(defun achive-remove-nth-element (list index)
+  "Remove LIST element by INDEX."
+  (if (< (length list) (1+ index))
+      nil
+    (if (zerop index) (cdr list)
+      (let ((last (nthcdr (1- index) list)))
+        (setcdr last (cddr last))
+        list))))
+
+
+(defun achive-make-name (list _fields)
+  "Make stock name by decode `gb18030'.
+LIST: list of a stock value.
+FIELDS: list of field index."
+  (decode-coding-string (nth 1 list) 'gb18030))
+
+
+(defun achive-make-change-percent (list fields)
+  "Call function `achive-make-percent' to make `change-percent'.
+LIST: list of a stock value.
+FIELDS: list of field index."
+  (achive-make-percent (string-to-number (nth (cdr (assoc 'price fields)) list))
+                       (string-to-number (nth (cdr (assoc 'yestclose fields)) list))
+                       (string-to-number (nth (cdr (assoc 'open fields)) list))))
+
+
+(defun achive-make-volume (list _fields)
+  "Get volume of display, current volume / 100.
+LIST: list of a stock value.
+FIELDS: list of field index."
+  (number-to-string (/ (string-to-number (nth 9 list)) 100)))
+
+
+(defun achive-make-turn-volume (list _fields)
+  "Get turn-volume of display, current turn-volume / 10000, unit W (10000).
+LIST: list of a stock value.
+FIELDS: list of field index."
+  (format "%dW" (/ (string-to-number (nth 10 list)) 10000)))
+
+(defun achive-valid-entry-p (entry)
+  "Check ENTRY data of valid."
+  (not (string= (aref (cadr entry) 1) "-")))
+
+
+(defun achive-working-time-p (buffer-name)
+  "判断是否为交易时间。
+如果当前时间在任一市场的交易时间内，且名为 BUFFER-NAME 的缓冲区存在，
+返回 t。否则返回 nil。"
+  (if (get-buffer-window buffer-name)
+      (let ((codes (append (bound-and-true-p achive-index-list)
+                           (bound-and-true-p achive-stocks))))
+        (cl-loop for code in codes
+                 for market = (achive-get-market code)
+                 when (and market (achive-market-trading-hours-p market))
+                 return t))
+    nil))
+
+
+(defun achive-weekday-p ()
+  "Whether it is weekend or not."
+  (let ((week (format-time-string "%w")))
+    (not (or (string= week "0") (string= week "6")))))
+
+(defun achive-get-market (code)
+  "根据股票代码识别市场。
+CODE: 股票代码，如 sh000001, hk00700, usAAPL。
+返回市场标识：a-share, hk, us 或 nil。"
+  (cond
+   ((string-match-p "^\\(sh\\|sz\\)" code) 'a-share)
+   ((string-match-p "^hk" code) 'hk)
+   ((string-match-p "^us" code) 'us)
+   (t nil)))
+
+(defun achive-market-trading-hours-p (market)
+  "判断指定市场当前是否为交易时间。
+MARKET: 市场标识：a-share, hk, us。
+返回 t 如果在交易时间内，否则返回 nil。"
+  (let* ((current-hour (string-to-number (format-time-string "%H")))
+         (current-minute (string-to-number (format-time-string "%M")))
+         (current-time-num (+ (* current-hour 100) current-minute)))
+    (cl-case market
+      (a-share
+       (or (and (>= current-time-num 900) (<= current-time-num 1130))
+           (and (>= current-time-num 1300) (<= current-time-num 1500))))
+      (hk
+       (or (and (>= current-time-num 930) (<= current-time-num 1200))
+           (and (>= current-time-num 1300) (<= current-time-num 1600))))
+      (us
+       (let* ((utc-hour (string-to-number (format-time-string "%H" (current-time) t)))
+              (est-hour (mod (- utc-hour 5) 24))  ; UTC-5 为美国东部时间
+              (est-time-num (+ (* est-hour 100) current-minute)))
+         (and (>= est-time-num 2130) (<= est-time-num 400))))
+      (t nil))))
+
+
+(defun achive-remove-face (faced)
+  "Remove face for FACED to extract text."
+  (let ((end (length faced)))
+    (set-text-properties 0 end nil faced)
+    faced))
+
 (defun achive-make-request-url (api parameter)
   "Make sina request url.
 API: shares api.
 PARAMETER: request url parameter."
-  (format "%s/list=%s" api (string-join parameter ",")))
+  (let ((normalized-codes (seq-filter #'identity (mapcar #'achive-normalize-code parameter))))
+    (if normalized-codes
+        (format "%s/list=%s" api (string-join normalized-codes ","))
+      (error "没有有效的股票代码"))))
+
+(defun achive-normalize-code (code)
+  "标准化股票代码格式。
+新浪API对美股使用 gb_ 前缀，但用户可能输入 us 前缀。
+将 us 前缀转换为 gb_ 前缀，并转换为小写。
+如果 CODE 为 nil 或空字符串，返回 nil。
+对明显无效的代码（如纯数字）返回 nil。"
+  (when (and code (stringp code) (not (string-empty-p code)))
+    (let ((code (downcase (string-trim code))))
+      ;; 检查是否包含至少一个字母（A股、港股、美股代码都包含字母）
+      (if (string-match-p "[a-z]" code)
+          (if (string-match "^us\\(.+\\)" code)
+              (concat "gb_" (match-string 1 code))
+            code)
+        ;; 纯数字代码无效
+        nil))))
 
 
 (defun achive-request (url callback)
   "Handle request by URL.
 CALLBACK: function of after response."
-  (let ((url-request-method "POST")
-        (url-request-extra-headers '(("Content-Type" . "application/javascript;charset=UTF-8") ("Referer" . "https://finance.sina.com.cn"))))
-    (url-retrieve url (lambda (_status)
+  (let ((url-request-method "GET")  ; 改为GET方法
+        (url-request-extra-headers '(("Content-Type" . "application/javascript;charset=UTF-8")
+                                     ("Referer" . "https://finance.sina.com.cn")
+                                     ("User-Agent" . "Mozilla/5.0"))))
+    (url-retrieve url (lambda (status)
                         (let ((inhibit-message t))
-                          (message "achive: %s at %s" "The request is successful." (format-time-string "%T")))
-                        (funcall callback)) nil 'silent)))
+                          (if (plist-get status :error)
+                              (message "achive: 请求失败: %s" (plist-get status :error))
+                            (message "achive: %s at %s" "请求成功" (format-time-string "%T")))
+                          (funcall callback)) nil 'silent))))
 
 
 (defun achive-parse-response ()
   "Parse sina http response result by body."
-  (if (/= 200 url-http-response-status)
-      (error "Internal Server Error"))
+  ;; 检查HTTP响应状态
+  (save-excursion
+    (goto-char (point-min))
+    (if (re-search-forward "^HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
+        (let ((status-code (string-to-number (match-string 1))))
+          (if (/= status-code 200)
+              (error "Internal Server Error (状态码: %s)" status-code)))
+      ;; 如果没有找到HTTP头，可能是直接的数据响应
+      (message "achive: 警告: 未找到标准HTTP响应头，尝试直接解析")))
+
   (let ((resp-gbcode (with-current-buffer (current-buffer)
-                       (buffer-substring-no-properties (search-forward "\n\n") (point-max)))))
-    (decode-coding-string resp-gbcode 'gb18030)))
+                       (buffer-substring-no-properties
+                        (if (search-forward "\n\n" nil t)
+                            (point)
+                          (point-min))
+                        (point-max)))))
+    (let ((decoded-str (decode-coding-string resp-gbcode 'gb18030)))
+      ;; 检查是否包含错误响应
+      (when (string-match "sys_auth=\"FAILED\"" decoded-str)
+        (error "API请求失败: 包含无效代码或参数"))
+      decoded-str)))
 
 
 (defun achive-format-content (codes resp-str)
@@ -200,13 +430,16 @@ CALLBACK: function of after response."
 RESP-STR: string of response body.
 CODES: stocks list of request parameters.
 Return index and stocks data."
-  (let ((str-list (cl-loop with i = 0
-                           for it in codes
-                           if (string-match (format "%s=\"\\([^\"]+\\)\"" it) resp-str)
-                           collect (format "%s,%s" (nth i codes) (match-string 1 resp-str))
-                           else
-                           collect (nth i codes) end
-                           do (cl-incf i))))
+  (let ((str-list '()))
+    (dolist (it codes)
+      (when (and it (not (string-empty-p it)))
+        (let ((normalized-it (achive-normalize-code it)))
+          (if (let ((case-fold-search t))
+                (string-match (format "%s=\"\\([^\"]+\\)\"" normalized-it) resp-str))
+              (push (format "%s,%s" it (match-string 1 resp-str)) str-list)
+            (message "achive: 警告: 未找到代码 %s (标准化为 %s) 的数据" it normalized-it)
+            (push it str-list)))))
+    (setq str-list (nreverse str-list))
     (cl-loop for it in str-list
              with temp = nil
              do (setq temp (achive-format-row it))
@@ -219,20 +452,29 @@ Return index and stocks data."
 ROW-STR: string of row."
   (let ((value-list (split-string row-str ",")))
     (if (length= value-list 1)
-        (append value-list (make-list 9 "-"))
+        (progn
+          (message "achive: 警告: 行数据仅包含一个字段: %s" row-str)
+          (append value-list (make-list 9 "-")))
       (cl-loop for (_k . v) in achive-field-index-list
                collect (if (functionp v)
                            (funcall v value-list achive-field-index-list)
-                         (nth v value-list))))))
+                         (if (< v (length value-list))
+                             (nth v value-list)
+                           (progn
+                             (message "achive: 警告: 字段索引 %d 超出范围 (总字段数: %d)" v (length value-list))
+                             "-")))))))
 
 
 (defun achive-validate-request (codes callback)
   "Validate that the CODES is valid, then call CALLBACK function."
   (achive-request (achive-make-request-url achive-api codes)
                   (lambda ()
-                    (funcall callback (seq-filter
-                                       #'achive-valid-entry-p
-                                       (achive-format-content codes (achive-parse-response)))))))
+                    (condition-case err
+                        (funcall callback (seq-filter
+                                           #'achive-valid-entry-p
+                                           (achive-format-content codes (achive-parse-response))))
+                      (error (message "achive: 验证请求失败: %s" (error-message-string err))
+                             (funcall callback nil))))))
 
 
 (defun achive-render-request (buffer-name codes &optional callback)
@@ -240,12 +482,15 @@ ROW-STR: string of row."
 CALLBACK: callback function after the rendering."
   (achive-request (achive-make-request-url achive-api codes)
                   (lambda ()
-                    (setq achive-entry-list (achive-format-content codes
-                                                                   (achive-parse-response)))
-                    (achive-render buffer-name)
-                    
-                    (if (functionp callback)
-                        (funcall callback achive-entry-list)))))
+                    (condition-case err
+                        (let ((entries (achive-format-content codes (achive-parse-response))))
+                          (setq achive-entry-list entries)
+                          (achive-render buffer-name)
+                          (if (functionp callback)
+                              (funcall callback entries)))
+                      (error (message "achive: 渲染请求失败: %s" (error-message-string err))
+                             (if (functionp callback)
+                                 (funcall callback nil)))))))
 
 
 (defun achive-render (buffer-name &optional manual)
@@ -260,7 +505,7 @@ entry will remove face before render."
     (if (and manual (not achive-colouring))
         (setq entries (mapcar #'achive-remove-entry-face
                               achive-entry-list)))
-    
+
     (with-current-buffer buffer-name
       (setq tabulated-list-entries entries)
       (tabulated-list-print t t))))
@@ -308,7 +553,8 @@ entry will remove face before render."
     (unless cache
       (achive-writecache achive-cache-path achive-stock-list)
       (setq cache achive-stock-list))
-    (setq achive-stocks cache)))
+    ;; 过滤掉 nil 和空字符串
+    (setq achive-stocks (seq-filter (lambda (code) (and code (not (string-empty-p code)))) cache))))
 
 
 (defun achive-propertize-entry-face (entry)
@@ -359,42 +605,45 @@ entry will remove face before render."
                              (if (and achive-auto-refresh (not timer-alive))
                                  (achive-handle-auto-refresh))))))
 
-
-;;;###autoload
-;; (defun achive-exit ()
-;;   "Exit achive."
-;;   (interactive)
-;;   (quit-window t)
-;;   (message "Achive has been killed."))
-
-
 ;;;###autoload
 (defun achive-search (codes)
-  "Search stock by codes.
-CODES: string of stocks list."
-  (interactive "sPlease input code to search: ")
-  (setq achive-search-codes (split-string codes))
-  (achive-switch-visual achive-search-buffer-name)
-  (achive-render-request achive-search-buffer-name achive-search-codes))
+  "搜索股票代码并显示结果。
+CODES: 股票代码字符串，多个代码用空格分隔。
+搜索结果显示在独立缓冲区，不会自动添加到主列表。
+使用 achive-add 命令将股票添加到主列表。"
+  (interactive "s请输入要搜索的股票代码: ")
+  (setq achive-search-codes (seq-filter (lambda (code) (and code (not (string-empty-p code)))) (split-string codes)))
+  (if (null achive-search-codes)
+      (message "请输入有效的股票代码")
+    (achive-switch-visual achive-search-buffer-name)
+    (achive-render-request achive-search-buffer-name achive-search-codes
+                           (lambda (resp)
+                             (unless resp
+                               (message "未找到股票数据，请检查代码是否正确"))
+                             (when resp
+                               (message "搜索完成。使用 '+' 键添加股票到主列表，或使用 achive-add 命令。"))))))
 
 
 ;;;###autoload
 (defun achive-add (codes)
   "Add stocks by codes.
 CODES: string of stocks list."
-  (interactive "sPlease input code to add: ")
-  (setq codes (split-string codes))
-  (achive-validate-request codes (lambda (resp)
-                                   (setq codes (mapcar #'car resp))
-                                   
-                                   (when codes
-                                     (setq achive-stocks (append achive-stocks codes))
-                                     (achive-writecache achive-cache-path achive-stocks)
-                                     (achive-render-request achive-buffer-name
-                                                            (append achive-index-list achive-stocks)
-                                                            (lambda (_resp)
-                                                              (message "[%s] have been added."
-                                                                       (mapconcat 'identity codes ", "))))))))
+  (interactive "s请输入要添加的股票代码: ")
+  (setq codes (seq-filter (lambda (code) (and code (not (string-empty-p code)))) (split-string codes)))
+  (if (null codes)
+      (message "请输入有效的股票代码")
+    (achive-validate-request codes (lambda (resp)
+                                     (if resp
+                                         (let ((valid-codes (mapcar #'car resp)))
+                                           (when valid-codes
+                                             (setq achive-stocks (append achive-stocks valid-codes))
+                                             (achive-writecache achive-cache-path achive-stocks)
+                                             (achive-render-request achive-buffer-name
+                                                                    (append achive-index-list achive-stocks)
+                                                                    (lambda (_resp)
+                                                                      (message "已添加: [%s]"
+                                                                               (mapconcat 'identity valid-codes ", "))))))
+                                       (message "未找到有效的股票代码"))))))
 
 
 ;;;###autoload

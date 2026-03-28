@@ -23,14 +23,19 @@ Download el file to your load-path.
     :custom
     (achive-auto-refresh t)
     (achive-refresh-seconds 5)
-    (achive-stock-list '("sh600036" "sh601012" "sz000625" "sz002050" "sz002013" "sh600176")))
+    ;; A股示例
+    (achive-stock-list '("sh600036" "sh601012" "sz000625" "sz002050" "sz002013" "sh600176"))
+    ;; 港股美股示例（取消注释使用）
+    ;; (achive-stock-list '("sh600036" "sz000625" "hk00700" "hk00941" "usAAPL" "usMSFT"))
+    ;; 多市场指数示例
+    ;; (achive-index-list '("sh000001" "sz399001" "sz399006" "hkHSI" "hkHSCEI" "usDJI" "usIXIC")))
 #+END_SRC
 
 * Customization
 | Variable                  | Default                                 | type    | Description                                                                             |
 |---------------------------+-----------------------------------------+---------+-----------------------------------------------------------------------------------------|
-| achive-index-list         | '("sh000001" "sz399001" "sz399006")     | list    | List of composite index.                                                                |
-| achive-stock-list         | '("sh600036" "sz000625")                | list    | List of stocks.                                                                         |
+| achive-index-list         | '("sh000001" "sz399001" "sz399006")     | list    | List of composite index. 支持A股(sh/sz)、港股(hk)、美股(us)指数。                         |
+| achive-stock-list         | '("sh600036" "sz000625")                | list    | List of stocks. 支持A股(sh/sz)、港股(hk)、美股(us)股票。美股代码会自动转换为gb_前缀。     |
 | achive-buffer-name        | "*A Chive*"                               | string  | Buffer name of achive board.                                                            |
 | achive-search-buffer-name | "*A Chive - results -*"                   | string  | Buffer name of achive search board.                                                     |
 | achive-auto-refresh       | t                                       | boolean | Whether to refresh automatically.                                                       |
@@ -47,6 +52,43 @@ Download el file to your load-path.
 | achive-add              | Add favorite stocks by codes                         |
 | achive-remove           | Remove favorite stocks.                              |
 | achive-switch-colouring | Manual switch colouring. It's handy for emergencies. |
+
+* 构建和测试
+achive 包含完整的 Makefile 支持，方便构建、测试和安装。
+
+** 使用 Makefile
+#+BEGIN_SRC sh
+# 查看所有可用命令
+make help
+
+# 编译并运行测试（默认）
+make all
+
+# 仅编译
+make compile
+
+# 运行测试
+make test
+
+# 交互式运行测试
+make test-interactive
+
+# 安装到 Emacs 目录
+make install
+
+# 清理编译文件
+make clean
+
+# 创建发布包
+make dist
+#+END_SRC
+
+** 测试覆盖范围
+- 市场识别函数（A股/港股/美股）
+- API代码标准化（us -> gb_ 转换）
+- 多市场配置验证
+- 交易时间判断逻辑
+- 辅助函数测试
 
 * For traders
 #+BEGIN_QUOTE
