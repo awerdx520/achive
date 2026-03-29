@@ -23,12 +23,7 @@ Download el file to your load-path.
     :custom
     (achive-auto-refresh t)
     (achive-refresh-seconds 5)
-    ;; A股示例
-    (achive-stock-list '("sh600036" "sh601012" "sz000625" "sz002050" "sz002013" "sh600176"))
-    ;; 港股美股示例（取消注释使用）
-    ;; (achive-stock-list '("sh600036" "sz000625" "hk00700" "hk00941" "usAAPL" "usMSFT"))
-    ;; 多市场指数示例
-    ;; (achive-index-list '("sh000001" "sz399001" "sz399006" "hkHSI" "hkHSCEI" "usDJI" "usIXIC")))
+   (achive-stock-list '("sh600036" "sh601012" "hk00700" "hk00941" "usAAPL" "usMSFT"))
 #+END_SRC
 
 * Customization
