@@ -391,14 +391,14 @@ PARAMETER: request url parameter."
 
 (defun achive-request (url callback)
   "Handle request by URL.
-CALLBACK: function of after response."
+  CALLBACK: function of after response."
   (let ((url-request-method "GET")  ; 改为GET方法
         (url-request-extra-headers '(("Content-Type" . "application/javascript;charset=UTF-8")
                                      ("Referer" . "https://finance.sina.com.cn")
                                      ("User-Agent" . "Mozilla/5.0"))))
     (url-retrieve url (lambda (status)
                         (let ((inhibit-message t))
-                          (if (plist-get status :error)
+                          (if (and (listp status) (plist-get status :error))
                               (message "achive: 请求失败: %s" (plist-get status :error))
                             (message "achive: %s at %s" "请求成功" (format-time-string "%T")))
                           (funcall callback)) nil 'silent))))
@@ -625,7 +625,7 @@ CODES: 股票代码字符串，多个代码用空格分隔。
                              (unless resp
                                (message "未找到股票数据，请检查代码是否正确"))
                              (when resp
-                                                               (message "搜索完成。使用 '+' 键添加当前股票到主列表，或使用 achive-add 命令添加多个代码。"))))))
+                               (message "搜索完成。使用 '+' 键添加当前股票到主列表，或使用 achive-add 命令添加多个代码。"))))))
 
 ;;;###autoload
 (defun achive-current-code ()
@@ -633,16 +633,9 @@ CODES: 股票代码字符串，多个代码用空格分隔。
 如果在 `achive-visual-mode' 缓冲区中，返回当前行对应的股票代码字符串。
 否则返回 nil。"
   (when (derived-mode-p 'achive-visual-mode)
-    (cond
-     ((fboundp 'tabulated-list-get-id)
-      (tabulated-list-get-id))
-     (t
-      (let ((entry (tabulated-list-get-entry)))
-        (when entry
-          (cond
-           ((consp entry) (car entry))
-           ((vectorp entry) (aref entry 0))
-           (t nil))))))))
+    (let ((id (tabulated-list-get-id)))
+      (when (and id (stringp id))
+        id))))
 
 (defun achive-add (codes)
   "添加股票代码到主列表。
@@ -687,6 +680,58 @@ CODES: 股票代码字符串，多个代码用空格分隔。
                                (message "<%s> have been removed." code))))))
 
 
+(defun achive-show-chart (&optional chart-type)
+  "展示当前行股票的走势图。
+CHART-TYPE: 图表类型，'daily 为日线图，'min 为分时图，默认为日线图。"
+  (interactive)
+  (let* ((code (achive-current-code)))
+    (if (and code (stringp code))
+        (let* ((normalized-code (achive-normalize-code code)))
+          (if normalized-code
+              (let* ((chart-type (or chart-type 'daily))
+                     (chart-suffix (if (eq chart-type 'daily) "daily" "min"))
+                     (url (format "http://image.sinajs.cn/newchart/%s/n/%s.gif" chart-suffix normalized-code))
+                     (buffer-name (format "*A Chive - %s Chart - %s*" (if (eq chart-type 'daily) "Daily" "Min") code)))
+                (url-retrieve url
+                              (lambda (status)
+                                (let ((inhibit-message t))
+                                  (if (and (listp status) (plist-get status :error))
+                                      (message "achive: 获取走势图失败: %s" (plist-get status :error))
+                                    (with-current-buffer (current-buffer)
+                                      (goto-char (point-min))
+                                      (if (re-search-forward "^HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
+                                          (let ((status-code (string-to-number (match-string 1))))
+                                            (if (= status-code 200)
+                                                (progn
+                                                  (let ((image-data (buffer-substring-no-properties
+                                                                     (if (search-forward "\n\n" nil t)
+                                                                         (point)
+                                                                       (point-min))
+                                                                     (point-max))))
+                                                    (kill-buffer)
+                                                    (with-current-buffer (get-buffer-create buffer-name)
+                                                      (erase-buffer)
+                                                      (insert-image (create-image image-data 'gif t))
+                                                      (image-mode)
+                                                      (goto-char (point-min))
+                                                      (pop-to-buffer (current-buffer))))
+                                                  (message "achive: 获取走势图失败 (状态码: %s)" status-code))
+                                              (message "achive: 获取走势图失败: 无效的HTTP响应")))))))))
+                (message "achive: 无效的股票代码: %s" code)))
+          (message "achive: 请先选择一个股票")))))
+
+;;;###autoload
+(defun achive-show-daily-chart ()
+  "展示当前行股票的日线图。"
+  (interactive)
+  (achive-show-chart 'daily))
+
+;;;###autoload
+(defun achive-show-min-chart ()
+  "展示当前行股票的分时图。"
+  (interactive)
+  (achive-show-chart 'min))
+
 ;;;###autoload
 (defun achive-switch-colouring ()
   "Manual switch colouring. It's handy for emergencies."
@@ -695,12 +740,13 @@ CODES: 股票代码字符串，多个代码用空格分隔。
   (achive-render (buffer-name) t))
 
 ;;;;; mode
-
 (defvar achive-visual-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map "+" 'achive-add)
-    (define-key map "_" 'achive-remove)
+    (define-key map "-" 'achive-remove)
     (define-key map "c" 'achive-switch-colouring)
+    (define-key map "d" 'achive-show-daily-chart)
+    (define-key map "m" 'achive-show-min-chart)
     map)
   "Keymap for `achive-visual-mode'.")
 
