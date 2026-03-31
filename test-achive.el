@@ -239,6 +239,20 @@
     (should (string= (aref vec 2) "484.400"))
     (should (string= (aref vec 8) "481.600"))))
 
+(ert-deftest test-achive-format-row-us-parse-indices ()
+  "美股解析：新浪 `gb_` 返回字段与 A 股不同，须使用 `achive-parse-indices-us`。
+现价、昨收、开盘等不得沿用 A 股列号（否则会把日期等误当作价格）。"
+  (let* ((row (concat "usAAPL,苹果,246.6300,-0.87,2026-03-31 16:47:42,-2.1700,250.0700,250.8700,"
+                       "245.5100,288.3600,168.1700,39446015,43463141,3620809558200,7.93,31.100000,0.00,0.00,"
+                       "0.00,0.00,14681140000,63,247.8123,0.48,1.18,Mar 31 04:47AM EDT,Mar 30 04:00PM EDT,"
+                       "248.8000,66463,1,2026,9737363943.0869,248.8000,246.6300,16487740.4904,248.1500,246.6300"))
+         (vec (vconcat (achive-format-row row))))
+    (should (string= (aref vec 1) "苹果"))
+    (should (string= (aref vec 2) "246.6300"))
+    (should (string-match-p "-0\\.87" (aref vec 3)))
+    (should (string= (aref vec 8) "250.0700"))
+    (should (string= (aref vec 9) "248.8000"))))
+
 ;;; 运行测试
 
 (defun run-achive-tests ()

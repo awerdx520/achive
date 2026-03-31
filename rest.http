@@ -1,0 +1,44 @@
+# rest.http — restclient.el 语法（M-x restclient-mode，光标在请求内 C-c C-c 发送）
+# 与 achive 中 `achive-api'、请求头等一致；新浪接口须有 Referer。
+#
+# 说明：请求之间用「以 # 开头的行」分隔（restclient-current-min/max）。
+
+:base = http://hq.sinajs.cn
+:referer = https://finance.sina.com.cn
+:ua = Mozilla/5.0
+:ct = application/javascript;charset=UTF-8
+
+# A 股指数示例（上证指数）
+GET :base/list=sh000001
+Referer: :referer
+User-Agent: :ua
+Content-Type: :ct
+
+# A 股个股示例
+GET :base/list=sh600036
+Referer: :referer
+User-Agent: :ua
+Content-Type: :ct
+
+# 港股示例
+GET :base/list=hk00700
+Referer: :referer
+User-Agent: :ua
+Content-Type: :ct
+
+# 美股示例（用户代码 usAAPL / usaapl 会规范为 gb_aapl）
+GET :base/list=gb_aapl
+Referer: :referer
+User-Agent: :ua
+Content-Type: :ct
+
+# 多代码同请求（逗号分隔，与 achive-make-request-url 行为一致）
+GET :base/list=sh000001,hk00700,gb_aapl
+Referer: :referer
+User-Agent: :ua
+Content-Type: :ct
+
+# 走势图示例（日线；achive 走势图）
+GET https://image.sinajs.cn/newchart/daily/n/sh600036.gif
+Referer: :referer
+User-Agent: :ua

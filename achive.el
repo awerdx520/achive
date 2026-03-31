@@ -185,7 +185,7 @@ nil 表示使用默认前景色。
 
 ;;;; constants
 
-(defconst achive-api "https://hq.sinajs.cn"
+(defconst achive-api "http://hq.sinajs.cn"
   "Stocks Api.")
 
 
@@ -202,10 +202,17 @@ nil 表示使用默认前景色。
   '((name . 2) (price . 3) (high . 5) (low . 6) (open . 4) (yestclose . 7) (volume . 12) (turn . 13))
   "港股：新浪返回「英文简称,中文名,现价,开盘价,…」，字段与 A 股不同，不可共用 A 股下标。")
 
+(defconst achive-parse-indices-us
+  '((name . 1) (price . 2) (high . 7) (low . 8) (open . 6) (yestclose . 27) (volume . 11) (turn . 13))
+  "美股：新浪 `gb_` 代码返回字段与 A 股不同；下标为 `achive-format-content' 在行首追加代码列后的列号。
+现价、开盘、最高、最低、昨收、成交量、成交额与港股/A 股均不一致，不可共用 A 股下标。")
+
 (defun achive-field-index-list-for-market (market)
   "根据 MARKET 生成 `achive-format-row' 使用的字段描述列表。
-MARKET 为 `achive-get-market' 的返回值，非港股时使用 A 股下标。"
-  (let ((ix (if (eq market 'hk) achive-parse-indices-hk achive-parse-indices-a-share)))
+MARKET 为 `achive-get-market' 的返回值：港股、美股与 A 股使用各自下标。"
+  (let ((ix (cond ((eq market 'hk) achive-parse-indices-hk)
+                  ((eq market 'us) achive-parse-indices-us)
+                  (t achive-parse-indices-a-share))))
     (list (cons 'code 0)
           (cons 'name 'achive-make-name)
           (cons 'price (cdr (assoc 'price ix)))
@@ -599,9 +606,9 @@ ROW-STR: string of row."
   (let* ((value-list (split-string row-str ","))
          (market (let ((c (nth 0 value-list)))
                    (if (stringp c) (achive-get-market c) nil)))
-         (achive--parse-indices (if (eq market 'hk)
-                                    achive-parse-indices-hk
-                                  achive-parse-indices-a-share))
+         (achive--parse-indices (cond ((eq market 'hk) achive-parse-indices-hk)
+                                      ((eq market 'us) achive-parse-indices-us)
+                                      (t achive-parse-indices-a-share)))
          (field-list (achive-field-index-list-for-market (or market 'a-share))))
     (if (length= value-list 1)
         (progn
@@ -1101,6 +1108,8 @@ CHART-TYPE: 图表类型，`daily' 为日线图，`min' 为分时图，默认为
 
 ;; 港股新浪原始串（无代码前缀）字段顺序与 A 股不同：英文简称,中文名,现价,开盘价,最高,最低,昨收,…
 ;; `achive-format-content' 在每行前加「用户代码,」后，中文名为第 2 列、开盘价为第 4 列（见 `achive-parse-indices-hk'）。
+
+;; 美股（gb_）新浪原始串与 A 股亦不同：中文名,现价,涨跌幅%,时间,…,昨收约在倒数若干列（见 `achive-parse-indices-us'）。
 
 ;; 0：”大秦铁路”，股票名字；
 ;; 1：”27.55″，今日开盘价；
