@@ -160,10 +160,33 @@ nil 表示使用默认前景色。
   "Stocks Api.")
 
 
-(defconst achive-field-index-list
-  '((code . 0) (name . achive-make-name) (price . 4) (change-percent . achive-make-change-percent)
-    (high . 5) (low . 6) (volume . achive-make-volume) (turn-volume . achive-make-turn-volume) (open . 2) (yestclose . 3))
-  "Index or fucntion of each piece of data.")
+(defvar achive--parse-indices nil
+  "当前行解析使用的字段下标 alist，由 `achive-format-row' 动态绑定。
+键为 name、price、open、yestclose、high、low、volume、turn。")
+
+(defconst achive-parse-indices-a-share
+  '((name . 1) (price . 4) (high . 5) (low . 6) (open . 2) (yestclose . 3) (volume . 9) (turn . 10))
+  "A 股/指数：在 `achive-format-content' 拼接 `代码,新浪字段…' 后的逗号分隔下标。
+与文件末尾注释中 A 股字段说明一致（下标整体比纯新浪响应多 1，因多了代码列）。")
+
+(defconst achive-parse-indices-hk
+  '((name . 2) (price . 3) (high . 5) (low . 6) (open . 4) (yestclose . 7) (volume . 12) (turn . 13))
+  "港股：新浪返回「英文简称,中文名,现价,开盘价,…」，字段与 A 股不同，不可共用 A 股下标。")
+
+(defun achive-field-index-list-for-market (market)
+  "根据 MARKET 生成 `achive-format-row' 使用的字段描述列表。
+MARKET 为 `achive-get-market' 的返回值，非港股时使用 A 股下标。"
+  (let ((ix (if (eq market 'hk) achive-parse-indices-hk achive-parse-indices-a-share)))
+    (list (cons 'code 0)
+          (cons 'name 'achive-make-name)
+          (cons 'price (cdr (assoc 'price ix)))
+          (cons 'change-percent 'achive-make-change-percent)
+          (cons 'high (cdr (assoc 'high ix)))
+          (cons 'low (cdr (assoc 'low ix)))
+          (cons 'volume 'achive-make-volume)
+          (cons 'turn-volume 'achive-make-turn-volume)
+          (cons 'open (cdr (assoc 'open ix)))
+          (cons 'yestclose (cdr (assoc 'yestclose ix))))))
 
 
 (defmacro achive-number-sort (index)
@@ -307,31 +330,31 @@ CODES: list of stock codes."
 (defun achive-make-name (list _fields)
   "Make stock name by decode `gb18030'.
 LIST: list of a stock value.
-FIELDS: list of field index."
-  (decode-coding-string (nth 1 list) 'gb18030))
+FIELDS: 忽略；名称下标来自动态变量 `achive--parse-indices'。"
+  (decode-coding-string (nth (cdr (assoc 'name achive--parse-indices)) list) 'gb18030))
 
 
-(defun achive-make-change-percent (list fields)
+(defun achive-make-change-percent (list _fields)
   "Call function `achive-make-percent' to make `change-percent'.
 LIST: list of a stock value.
-FIELDS: list of field index."
-  (achive-make-percent (string-to-number (nth (cdr (assoc 'price fields)) list))
-                       (string-to-number (nth (cdr (assoc 'yestclose fields)) list))
-                       (string-to-number (nth (cdr (assoc 'open fields)) list))))
+FIELDS: 忽略；价格类下标来自 `achive--parse-indices'。"
+  (achive-make-percent (string-to-number (nth (cdr (assoc 'price achive--parse-indices)) list))
+                       (string-to-number (nth (cdr (assoc 'yestclose achive--parse-indices)) list))
+                       (string-to-number (nth (cdr (assoc 'open achive--parse-indices)) list))))
 
 
 (defun achive-make-volume (list _fields)
   "Get volume of display, current volume / 100.
 LIST: list of a stock value.
-FIELDS: list of field index."
-  (number-to-string (/ (string-to-number (nth 9 list)) 100)))
+FIELDS: 忽略；成交量下标来自 `achive--parse-indices'。"
+  (number-to-string (/ (string-to-number (nth (cdr (assoc 'volume achive--parse-indices)) list)) 100)))
 
 
 (defun achive-make-turn-volume (list _fields)
   "Get turn-volume of display, current turn-volume / 10000, unit W (10000).
 LIST: list of a stock value.
-FIELDS: list of field index."
-  (format "%dW" (/ (string-to-number (nth 10 list)) 10000)))
+FIELDS: 忽略；成交额下标来自 `achive--parse-indices'。"
+  (format "%dW" (/ (string-to-number (nth (cdr (assoc 'turn achive--parse-indices)) list)) 10000)))
 
 (defun achive-valid-entry-p (entry)
   "Check ENTRY data of valid.
@@ -490,14 +513,20 @@ Return index and stocks data."
 (defun achive-format-row (row-str)
   "Format row content.
 ROW-STR: string of row."
-  (let ((value-list (split-string row-str ",")))
+  (let* ((value-list (split-string row-str ","))
+         (market (let ((c (nth 0 value-list)))
+                   (if (stringp c) (achive-get-market c) nil)))
+         (achive--parse-indices (if (eq market 'hk)
+                                    achive-parse-indices-hk
+                                  achive-parse-indices-a-share))
+         (field-list (achive-field-index-list-for-market (or market 'a-share))))
     (if (length= value-list 1)
         (progn
           (message "achive: 警告: 行数据仅包含一个字段: %s" row-str)
           (append value-list (make-list 9 "-")))
-      (cl-loop for (_k . v) in achive-field-index-list
+      (cl-loop for (_k . v) in field-list
                collect (if (functionp v)
-                           (funcall v value-list achive-field-index-list)
+                           (funcall v value-list field-list)
                          (if (< v (length value-list))
                              (nth v value-list)
                            (progn
@@ -635,9 +664,7 @@ entry will remove face before render."
   "Launch achive and switch to visual buffer."
   (interactive)
   (achive-init)
-
   (let ((timer-alive (achive-timer-alive-p)))
-
     (achive-switch-visual achive-buffer-name)
     (achive-render-request achive-buffer-name
                            (append achive-index-list achive-stocks)
@@ -892,6 +919,9 @@ CHART-TYPE: 图表类型 ('daily 或 'min)。"
 
 (provide 'achive)
 ;;; achive.el ends here
+
+;; 港股新浪原始串（无代码前缀）字段顺序与 A 股不同：英文简称,中文名,现价,开盘价,最高,最低,昨收,…
+;; `achive-format-content' 在每行前加「用户代码,」后，中文名为第 2 列、开盘价为第 4 列（见 `achive-parse-indices-hk'）。
 
 ;; 0：”大秦铁路”，股票名字；
 ;; 1：”27.55″，今日开盘价；

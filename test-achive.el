@@ -180,6 +180,15 @@
   (should (achive-valid-entry-p '("sh000001" ["sh000001" "上证指数" "3245.31" "-0.72%"])))
   (should-not (achive-valid-entry-p '("invalid" ["invalid" "-" "-" "-"]))))
 
+(ert-deftest test-achive-format-row-hk-opens-not-name ()
+  "港股解析：开盘价必须为数值列，不得取中文名称列。
+新浪港股字段顺序为「英文简称,中文名,现价,开盘价,最高,最低,昨收,…」。"
+  (let* ((row "hk00700,TENCENT,腾讯控股,484.400,481.600,492.000,480.000,487.600,6.000,1.246,0,0,6952708467,14357032,0,0,0,0,2026/03/31,14:01")
+         (vec (vconcat (achive-format-row row))))
+    (should (string= (aref vec 1) "腾讯控股"))
+    (should (string= (aref vec 2) "484.400"))
+    (should (string= (aref vec 8) "481.600"))))
+
 ;;; 运行测试
 
 (defun run-achive-tests ()
