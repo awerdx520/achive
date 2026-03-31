@@ -371,8 +371,7 @@ ENTRY can be either (CODE DATA) list or data vector."
 如果当前时间在任一市场的交易时间内，且名为 BUFFER-NAME 的缓冲区存在，
 返回 t。否则返回 nil。"
   (if (get-buffer-window buffer-name)
-      (let ((codes (append (bound-and-true-p achive-index-list)
-                           (bound-and-true-p achive-stocks))))
+      (let ((codes (achive-display-codes)))
         (cl-loop for code in codes
                  for market = (achive-get-market code)
                  when (and market (achive-market-trading-hours-p market))
@@ -448,6 +447,35 @@ PARAMETER: request url parameter."
         nil))))
 
 
+(defun achive-code-equal-p (a b)
+  "判断两个股票代码是否视为同一只（忽略大小写）。"
+  (and a b (stringp a) (stringp b) (string= (downcase a) (downcase b))))
+
+
+(defun achive-dedupe-codes (codes)
+  "对代码列表去重，保持首次出现顺序，比较时忽略大小写。
+CODES 中的 nil 与空字符串会被丢弃。"
+  (let (result)
+    (dolist (c codes)
+      (when (and c (stringp c) (not (string-empty-p c)))
+        (unless (cl-find c result :test #'achive-code-equal-p)
+          (push c result))))
+    (nreverse result)))
+
+
+(defun achive-display-codes ()
+  "合并指数列表与自选列表，用于请求数据与主界面展示。
+先 `achive-index-list'，再 `achive-stocks' 中尚未出现在指数里的代码；
+各自去重，且与指数重复的自选代码只显示在指数行。"
+  (let* ((indices (achive-dedupe-codes (or achive-index-list '())))
+         (stocks (achive-dedupe-codes (or achive-stocks '())))
+         (index-down (mapcar #'downcase indices)))
+    (append indices
+            (seq-filter
+             (lambda (s) (not (member (downcase s) index-down)))
+             stocks))))
+
+
 (defun achive-request (url callback)
   "Handle request by URL.
   CALLBACK: function of after response."
@@ -458,8 +486,8 @@ PARAMETER: request url parameter."
     (url-retrieve url (lambda (status)
                         (let ((inhibit-message t))
                           (if (and (listp status) (plist-get status :error))
-                              (message "achive: 请求失败: %s" (plist-get status :error))
-                            (message "achive: %s at %s" "请求成功" (format-time-string "%T")))
+                              (message "achive: 请求失败: %s (%s)" (plist-get status :error) url)
+                            (message "achive: %s (%s) at %s" "请求成功" url (format-time-string "%T")))
                           (funcall callback)) nil 'silent))))
 
 
@@ -583,7 +611,7 @@ entry will remove face before render."
 (defun achive-refresh ()
   "Referer achive visual buffer or achive search visual buffer."
   (if (get-buffer-window achive-buffer-name)
-      (achive-render-request achive-buffer-name (append achive-index-list achive-stocks)))
+      (achive-render-request achive-buffer-name (achive-display-codes)))
   (if (get-buffer-window achive-search-buffer-name)
       (achive-render-request achive-search-buffer-name achive-search-codes)))
 
@@ -604,7 +632,7 @@ entry will remove face before render."
   (if (and (achive-timer-alive-p) (achive-weekday-p))
       (if (achive-working-time-p achive-buffer-name)
           (achive-render-request achive-buffer-name
-                                 (append achive-index-list achive-stocks)
+                                 (achive-display-codes)
                                  (lambda (_resp)
                                    (achive-handle-auto-refresh)))
         (achive-handle-auto-refresh))))
@@ -622,8 +650,10 @@ entry will remove face before render."
     (unless cache
       (achive-writecache achive-cache-path achive-stock-list)
       (setq cache achive-stock-list))
-    ;; 过滤掉 nil 和空字符串
-    (setq achive-stocks (seq-filter (lambda (code) (and code (not (string-empty-p code)))) cache))))
+    ;; 过滤掉 nil 和空字符串，并去重（修复缓存或历史操作产生的重复项）
+    (setq achive-stocks (achive-dedupe-codes
+                         (seq-filter (lambda (code) (and code (not (string-empty-p code))))
+                                     cache)))))
 
 
 (defun achive-propertize-entry-face (entry)
@@ -667,7 +697,7 @@ entry will remove face before render."
   (let ((timer-alive (achive-timer-alive-p)))
     (achive-switch-visual achive-buffer-name)
     (achive-render-request achive-buffer-name
-                           (append achive-index-list achive-stocks)
+                           (achive-display-codes)
                            (lambda (_resp)
                              (if (and achive-auto-refresh (not timer-alive))
                                  (achive-handle-auto-refresh))))))
@@ -679,7 +709,9 @@ CODES: 股票代码字符串，多个代码用空格分隔。
 搜索结果显示在独立缓冲区，不会自动添加到主列表。
 使用 achive-add 命令将股票添加到主列表。"
   (interactive "s请输入要搜索的股票代码: ")
-  (setq achive-search-codes (seq-filter (lambda (code) (and code (not (string-empty-p code)))) (split-string codes)))
+  (setq achive-search-codes
+        (achive-dedupe-codes
+         (seq-filter (lambda (code) (and code (not (string-empty-p code)))) (split-string codes))))
   (if (null achive-search-codes)
       (message "请输入有效的股票代码")
     (achive-switch-visual achive-search-buffer-name)
@@ -707,20 +739,33 @@ CODES: 股票代码字符串，多个代码用空格分隔。
                          (read-string "请输入要添加的股票代码: ")
                        (or (achive-current-code)
                            (read-string "请输入要添加的股票代码: ")))))
-  (setq codes (seq-filter (lambda (code) (and code (not (string-empty-p code)))) (split-string codes)))
+  (setq codes (achive-dedupe-codes
+               (seq-filter (lambda (code) (and code (not (string-empty-p code)))) (split-string codes))))
   (if (null codes)
       (message "请输入有效的股票代码")
     (achive-validate-request codes (lambda (resp)
                                      (if resp
-                                         (let ((valid-codes (mapcar #'car resp)))
-                                           (when valid-codes
-                                             (setq achive-stocks (append achive-stocks valid-codes))
+                                         (let* ((valid-codes (mapcar #'car resp))
+                                                (new-codes
+                                                 (seq-filter
+                                                  (lambda (c)
+                                                    (and (not (cl-find c achive-stocks :test #'achive-code-equal-p))
+                                                         (not (cl-find c achive-index-list :test #'achive-code-equal-p))))
+                                                  valid-codes)))
+                                           (cond
+                                            (new-codes
+                                             (setq achive-stocks (append achive-stocks new-codes))
+                                             (setq achive-stocks (achive-dedupe-codes achive-stocks))
                                              (achive-writecache achive-cache-path achive-stocks)
                                              (achive-render-request achive-buffer-name
-                                                                    (append achive-index-list achive-stocks)
+                                                                    (achive-display-codes)
                                                                     (lambda (_resp)
                                                                       (message "已添加: [%s]"
-                                                                               (mapconcat 'identity valid-codes ", "))))))
+                                                                               (mapconcat 'identity new-codes ", ")))))
+                                            (valid-codes
+                                             (message "所选代码已在列表中（指数或自选中已存在）"))
+                                            (t
+                                             (message "未找到有效的股票代码"))))
                                        (message "未找到有效的股票代码"))))))
 
 ;;;###autoload
@@ -738,144 +783,219 @@ CODES: 股票代码字符串，多个代码用空格分隔。
     (when index
       (setq achive-stocks (achive-remove-nth-element achive-stocks index))
       (achive-writecache achive-cache-path achive-stocks)
-      (achive-render-request achive-buffer-name (append achive-index-list achive-stocks)
+      (achive-render-request achive-buffer-name (achive-display-codes)
                              (lambda (_resp)
                                (message "<%s> have been removed." code))))))
 
 
-(defun achive-show-chart (&optional chart-type)
-  "展示当前行股票的走势图。
-CHART-TYPE: 图表类型，'daily 为日线图，'min 为分时图，默认为日线图。
-显示方式由 `achive-chart-display-method' 控制：
-- 'buffer: 在独立缓冲区显示
-- 'posframe: 使用 posframe 在当前 point 位置显示"
-  (interactive)
-  (let* ((code (achive-current-code)))
-    (if (and code (stringp code))
-        (let* ((normalized-code (achive-normalize-code code)))
-          (if normalized-code
-              (let* ((chart-type (or chart-type 'daily))
-                     (chart-suffix (if (eq chart-type 'daily) "daily" "min"))
-                     (url (format "http://image.sinajs.cn/newchart/%s/n/%s.gif" chart-suffix normalized-code)))
-                (message "achive: 正在获取 %s 的走势图 (URL: %s)..." code url)
-                (url-retrieve url
-                              (lambda (status)
-                                (let ((inhibit-message t))
-                                  (if (and (listp status) (plist-get status :error))
-                                      (message "achive: 获取走势图失败: %s" (plist-get status :error))
-                                    (with-current-buffer (current-buffer)
-                                      (goto-char (point-min))
-                                      (if (re-search-forward "^HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
-                                          (let ((status-code (string-to-number (match-string 1))))
-                                            (if (= status-code 200)
-                                                (let ((image-data (buffer-substring-no-properties
-                                                                   (if (search-forward "\n\n" nil t)
-                                                                       (point)
-                                                                     (point-min))
-                                                                   (point-max))))
-                                                  (kill-buffer)
-                                                  (if (and (stringp image-data) (> (length image-data) 0))
-                                                      (achive-display-chart image-data code chart-type)
-                                                    (message "achive: 获取走势图失败: 图片数据为空")))
-                                              (message "achive: 获取走势图失败 (状态码: %s)" status-code))
-                                            (message "achive: 获取走势图失败: 无效的HTTP响应"))))))))
-                (message "achive: 无效的股票代码: %s (normalized: %s)" code normalized-code)))
-          (message "achive: 请先选择一个股票 (当前模式: %s)" major-mode))))
-
-  (defun achive-display-chart (image-data code chart-type)
-    "根据 `achive-chart-display-method' 显示图表。
+(defun achive-display-chart (image-data code chart-type)
+  "根据 `achive-chart-display-method' 显示图表。
 IMAGE-DATA: 图片的原始数据。
 CODE: 股票代码。
 CHART-TYPE: 图表类型 ('daily 或 'min)。"
+  (if (not (display-graphic-p))
+      (message "achive: 当前为终端帧（-nw），无法内嵌显示图片；请使用带图形界面的 Emacs")
     (if (eq achive-chart-display-method 'posframe)
         (achive-display-chart-posframe image-data code chart-type)
-      (achive-display-chart-buffer image-data code chart-type)))
+      (achive-display-chart-buffer image-data code chart-type))))
 
-  (defun achive-display-chart-buffer (image-data code chart-type)
-    "在独立缓冲区显示图表。
+(defun achive-display-chart-buffer (image-data code chart-type)
+  "在独立缓冲区显示图表。
 IMAGE-DATA: 图片的原始数据。
 CODE: 股票代码。
 CHART-TYPE: 图表类型 ('daily 或 'min)。"
-    (let ((buffer-name (format "*A Chive - %s Chart - %s*" (if (eq chart-type 'daily) "Daily" "Min") code))
-          (max-image-size achive-max-image-size))
-      (with-current-buffer (get-buffer-create buffer-name)
-        (erase-buffer)
-        (insert-image (create-image image-data 'gif t :max-width (and max-image-size (car max-image-size)) :max-height (and max-image-size (cdr max-image-size))))
-        (image-mode)
-        (goto-char (point-min))
-        (pop-to-buffer (current-buffer)))))
+  (let ((buffer-name (format "*A Chive - %s Chart - %s*" (if (eq chart-type 'daily) "Daily" "Min") code))
+        (max-image-size achive-max-image-size))
+    (with-current-buffer (get-buffer-create buffer-name)
+      (erase-buffer)
+      (insert-image (create-image image-data 'gif t :max-width (and max-image-size (car max-image-size)) :max-height (and max-image-size (cdr max-image-size))))
+      (image-mode)
+      (goto-char (point-min))
+      (pop-to-buffer (current-buffer)))))
 
-  (defvar achive-chart-posframe-buffer nil
-    "用于显示图表的 posframe 缓冲区。")
+(defvar achive-chart-posframe-buffer nil
+  "用于显示图表的 posframe 缓冲区。")
 
-  (defun achive-get-contrast-background-color ()
-    "根据当前 Emacs 主题计算高对比度的背景色。
+(defvar achive--chart-origin-window nil
+  "`achive-show-chart' 发起请求时的所选窗口，供 posframe 在异步回调后正确定位。")
+
+(defun achive--curl-chart-data (url)
+  "使用 curl 获取 URL 的原始字节（走势图 GIF）。
+适用于 `url-retrieve' 在多字节缓冲中破坏二进制的情况。
+若系统无 curl 或失败则返回 nil。"
+  (when (executable-find "curl")
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (let ((exit (call-process "curl" nil '(t nil) nil "-sL"
+                                "-A" "Mozilla/5.0 (compatible; Achive-Emacs)"
+                                "--connect-timeout" "15"
+                                url)))
+        (when (and (eq exit 0) (> (buffer-size) 0))
+          (buffer-substring-no-properties (point-min) (point-max)))))))
+
+(defun achive--show-schedule-display (image-data code chart-kind)
+  "在下一主循环回合显示走势图，避免 `url-retrieve' 回调内直接 `pop-to-buffer' 失效。
+通过闭包传参，避免 `run-at-time' 将 `&rest' 参数封装成单列表导致形参错位。"
+  (run-at-time 0 nil
+               (lambda ()
+                 (achive-display-chart image-data code chart-kind))))
+
+(defun achive--show-chart-http-body-start ()
+  "当前缓冲为 `url-retrieve' 结果时将 point 移到 HTTP 正文起点，返回 t；否则 nil。"
+  (goto-char (point-min))
+  (cond
+   ((re-search-forward "\r\n\r\n" nil t) t)
+   ((re-search-forward "\n\n" nil t) t)
+   (t nil)))
+
+(defun achive-get-contrast-background-color ()
+  "根据当前 Emacs 主题计算高对比度的背景色。
 返回适合作为 posframe 背景的颜色。"
-    (let* ((bg-color (face-background 'default nil t))
-           (fg-color (face-foreground 'default nil t))
-           (bg-rgb (color-values bg-color))
-           (fg-rgb (color-values fg-color)))
-      (if (and bg-rgb fg-color)
-          (let* ((bg-brightness (/ (+ (car bg-rgb) (cadr bg-rgb) (caddr bg-rgb)) 3.0))
-                 (fg-brightness (/ (+ (car fg-rgb) (cadr fg-rgb) (caddr fg-rgb)) 3.0))
-                 (contrast-threshold 128))
-            (if (> bg-brightness contrast-threshold)
-                ;; 背景较亮，使用深色背景
-                (if (> fg-brightness contrast-threshold)
-                    "#000000"
-                  fg-color)
-              ;; 背景较暗，使用浅色背景
-              (if (< fg-brightness contrast-threshold)
-                  "#FFFFFF"
-                fg-color)))
-        "#FFFFFF")))
+  (let* ((bg-color (face-background 'default nil t))
+         (fg-color (face-foreground 'default nil t))
+         (bg-rgb (color-values bg-color))
+         (fg-rgb (color-values fg-color)))
+    (if (and bg-rgb fg-color)
+        (let* ((bg-brightness (/ (+ (car bg-rgb) (cadr bg-rgb) (caddr bg-rgb)) 3.0))
+               (fg-brightness (/ (+ (car fg-rgb) (cadr fg-rgb) (caddr fg-rgb)) 3.0))
+               (contrast-threshold 128))
+          (if (> bg-brightness contrast-threshold)
+              ;; 背景较亮，使用深色背景
+              (if (> fg-brightness contrast-threshold)
+                  "#000000"
+                fg-color)
+            ;; 背景较暗，使用浅色背景
+            (if (< fg-brightness contrast-threshold)
+                "#FFFFFF"
+              fg-color)))
+      "#FFFFFF")))
 
-  (defun achive-display-chart-posframe (image-data code chart-type)
-    "使用 posframe 在当前 point 位置显示图表。
+(defun achive-display-chart-posframe (image-data code chart-type)
+  "使用 posframe 在当前 point 位置显示图表。
 IMAGE-DATA: 图片的原始数据。
 CODE: 股票代码。
 CHART-TYPE: 图表类型 ('daily 或 'min)。"
-    (require 'posframe)
-    (let* ((buffer-name (format " *achive-chart-%s-%s*" (if (eq chart-type 'daily) "daily" "min") code))
-           (buffer (get-buffer-create buffer-name))
-           (max-image-size achive-max-image-size)
-           (bg-color (or achive-chart-background-color (achive-get-contrast-background-color)))
-           (border-color (or achive-chart-border-color (face-attribute 'default :foreground))))
-      (setq achive-chart-posframe-buffer buffer)
-      (with-current-buffer buffer
-        (erase-buffer)
-        (insert-image (create-image image-data 'gif t :max-width (and max-image-size (car max-image-size)) :max-height (and max-image-size (cdr max-image-size))))
-        (setq cursor-type nil)
-        (setq truncate-lines t)
-        (setq show-trailing-whitespace nil))
-      (posframe-show buffer
-                     :position (point)
-                     :poshandler #'posframe-poshandler-point-bottom-left-corner
-                     :background-color bg-color
-                     :border-width 1
-                     :border-color border-color
-                     :internal-border-width 5
-                     :internal-border-color bg-color)
-      (add-hook 'post-command-hook #'achive-hide-chart-posframe-on-input)))
+  (require 'posframe)
+  (let* ((buffer-name (format " *achive-chart-%s-%s*" (if (eq chart-type 'daily) "daily" "min") code))
+         (buffer (get-buffer-create buffer-name))
+         (max-image-size achive-max-image-size)
+         (bg-color (or achive-chart-background-color (achive-get-contrast-background-color)))
+         (border-color (or achive-chart-border-color (face-attribute 'default :foreground))))
+    (setq achive-chart-posframe-buffer buffer)
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert-image (create-image image-data 'gif t :max-width (and max-image-size (car max-image-size)) :max-height (and max-image-size (cdr max-image-size))))
+      (setq cursor-type nil)
+      (setq truncate-lines t)
+      (setq show-trailing-whitespace nil))
+    (posframe-show buffer
+                   :position
+                   (if (and achive--chart-origin-window
+                            (window-live-p achive--chart-origin-window))
+                       (with-selected-window achive--chart-origin-window
+                         (point))
+                     (point-min))
+                   :poshandler #'posframe-poshandler-point-bottom-left-corner
+                   :background-color bg-color
+                   :border-width 1
+                   :border-color border-color
+                   :internal-border-width 5
+                   :internal-border-color bg-color)
+    (add-hook 'post-command-hook #'achive-hide-chart-posframe-on-input)))
 
-  (defun achive-hide-chart-posframe-on-input ()
-    "在用户输入时隐藏 posframe 图表。"
-    (unless (or (eq this-command 'achive-show-daily-chart)
-                (eq this-command 'achive-show-min-chart)
-                (eq this-command 'achive-show-chart)
-                (eq this-command 'ignore))
-      (when achive-chart-posframe-buffer
-        (posframe-hide achive-chart-posframe-buffer)
-        (setq achive-chart-posframe-buffer nil))
-      (remove-hook 'post-command-hook #'achive-hide-chart-posframe-on-input)))
-
-  (defun achive-hide-chart-posframe ()
-    "手动隐藏 posframe 图表。"
-    (interactive)
+(defun achive-hide-chart-posframe-on-input ()
+  "在用户输入时隐藏 posframe 图表。"
+  (unless (or (eq this-command 'achive-show-daily-chart)
+              (eq this-command 'achive-show-min-chart)
+              (eq this-command 'achive-show-chart)
+              (eq this-command 'ignore))
     (when achive-chart-posframe-buffer
       (posframe-hide achive-chart-posframe-buffer)
-      (setq achive-chart-posframe-buffer nil)
-      (remove-hook 'post-command-hook #'achive-hide-chart-posframe-on-input))))
+      (setq achive-chart-posframe-buffer nil))
+    (remove-hook 'post-command-hook #'achive-hide-chart-posframe-on-input)))
+
+(defun achive-hide-chart-posframe ()
+  "手动隐藏 posframe 图表。"
+  (interactive)
+  (when achive-chart-posframe-buffer
+    (posframe-hide achive-chart-posframe-buffer)
+    (setq achive-chart-posframe-buffer nil)
+    (remove-hook 'post-command-hook #'achive-hide-chart-posframe-on-input)))
+
+(defun achive--show-chart-after-retrieve (status code chart-kind)
+  "处理新浪走势图 `url-retrieve' 的回调。
+STATUS：回调状态 plist；CODE：股票代码；CHART-KIND：日线图或分时图类型符号（与 `achive-show-chart' 一致）。"
+  (if (and (listp status) (plist-get status :error))
+      (progn
+        (message "achive: 获取走势图失败: %s" (plist-get status :error))
+        (when (buffer-live-p (current-buffer))
+          (kill-buffer (current-buffer))))
+    (let ((buf (current-buffer)))
+      (with-current-buffer buf
+        (when enable-multibyte-characters
+          (set-buffer-multibyte nil))
+        (goto-char (point-min))
+        (if (re-search-forward "^HTTP/[0-9.]+ \\([0-9]+\\)" nil t)
+            (let ((status-code (string-to-number (match-string 1))))
+              (if (= status-code 200)
+                  (progn
+                    (achive--show-chart-http-body-start)
+                    (let ((image-data (buffer-substring-no-properties (point) (point-max))))
+                      (kill-buffer buf)
+                      (cond
+                       ((not (and (stringp image-data) (> (length image-data) 0)))
+                        (message "achive: 获取走势图失败: 图片数据为空"))
+                       ((string-match-p "\\`GIF8[79]a" image-data)
+                        (achive--show-schedule-display image-data code chart-kind))
+                       (t
+                        (message "achive: 走势图响应非 GIF（可能被拦截或重定向），长度=%d"
+                                 (length image-data))))))
+                (progn
+                  (kill-buffer buf)
+                  (message "achive: 获取走势图失败 (状态码: %s)" status-code))))
+          (progn
+            (kill-buffer buf)
+            (message "achive: 获取走势图失败: 无效的HTTP响应")))))))
+
+(defun achive-show-chart (&optional chart-type)
+  "展示当前行股票的走势图。
+CHART-TYPE: 图表类型，`daily' 为日线图，`min' 为分时图，默认为日线图。
+显示方式由 `achive-chart-display-method' 控制：
+- `buffer': 在独立缓冲区显示
+- `posframe': 使用 posframe 在当前 point 位置显示"
+  (interactive)
+  (let ((code (achive-current-code)))
+    (cond
+     ((not (and code (stringp code)))
+      (message "achive: 请先选择一个股票 (当前模式: %s)" major-mode))
+     (t
+      (let ((normalized-code (achive-normalize-code code)))
+        (cond
+         ((not normalized-code)
+          (message "achive: 无效的股票代码: %s (normalized: %s)" code normalized-code))
+         (t
+          (let* ((chart-kind (or chart-type 'daily))
+                 (chart-suffix (if (eq chart-kind 'daily) "daily" "min"))
+                 (url (format "http://image.sinajs.cn/newchart/%s/n/%s.gif"
+                              chart-suffix normalized-code)))
+            (setq achive--chart-origin-window (selected-window))
+            (message "achive: 正在获取 %s 的走势图 (URL: %s)..." code url)
+            (if (executable-find "curl")
+                (run-at-time
+                 0 nil
+                 (lambda ()
+                   (let ((data (achive--curl-chart-data url)))
+                     (cond
+                      ((and data (string-match-p "\\`GIF8[79]a" data))
+                       (achive--show-schedule-display data code chart-kind))
+                      (data
+                       (message "achive: 走势图数据非 GIF（长度=%d），请检查网络或稍后重试"
+                                (length data)))
+                      (t
+                       (message "achive: 使用 curl 下载走势图失败"))))))
+              (url-retrieve url
+                            (lambda (status)
+                              (achive--show-chart-after-retrieve status code chart-kind))))))))))))
 
 ;;;###autoload
 (defun achive-show-daily-chart ()

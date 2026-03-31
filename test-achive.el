@@ -180,6 +180,18 @@
   (should (achive-valid-entry-p '("sh000001" ["sh000001" "上证指数" "3245.31" "-0.72%"])))
   (should-not (achive-valid-entry-p '("invalid" ["invalid" "-" "-" "-"]))))
 
+(ert-deftest test-achive-dedupe-codes ()
+  "测试代码列表去重（忽略大小写）。"
+  (should (equal (achive-dedupe-codes '("hk00700" "HK00700" "sh600036"))
+                 '("hk00700" "sh600036"))))
+
+(ert-deftest test-achive-display-codes-merge ()
+  "测试指数与自选合并：去重且自选中与指数重复的代码不重复展示。"
+  (let ((achive-index-list '("sh000001" "sz399001"))
+        (achive-stocks '("sh600036" "sh000001" "hk00700" "sh600036")))
+    (should (equal (achive-display-codes)
+                   '("sh000001" "sz399001" "sh600036" "hk00700")))))
+
 (ert-deftest test-achive-format-row-hk-opens-not-name ()
   "港股解析：开盘价必须为数值列，不得取中文名称列。
 新浪港股字段顺序为「英文简称,中文名,现价,开盘价,最高,最低,昨收,…」。"
