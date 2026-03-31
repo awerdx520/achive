@@ -34,9 +34,12 @@
 
 (require 'cl-lib)
 (require 'url)
+(require 'url-parse)
 
 (declare-function posframe-show "posframe")
 (declare-function posframe-hide "posframe")
+(declare-function posframe-poshandler-point-bottom-left-corner "posframe")
+(declare-function tablist-minor-mode "tablist")
 
 
 (defvar url-http-response-status 0)
@@ -52,13 +55,13 @@
 (defcustom achive-index-list '("sh000001" "sz399001" "sz399006")
   "List of composite index."
   :group 'achive
-  :type 'list)
+  :type '(repeat string))
 
 
 (defcustom achive-stock-list '("sh600036" "sz000625")
   "List of stocks."
   :group 'achive
-  :type 'list)
+  :type '(repeat string))
 
 
 (defcustom achive-buffer-name "*A Chive*"
@@ -89,17 +92,43 @@
   :group 'achive
   :type 'string)
 
+(defcustom achive-proxy nil
+  "Achive 请求使用的代理。
+
+当该值为 nil 时不使用代理（遵循 Emacs 全局的 `url-proxy-services' 设置）。
+当该值为字符串时，会在 Achive 发起网络请求期间临时覆盖代理设置，同时影响：
+
+- 行情数据请求（`url-retrieve'）
+- 走势图下载（优先使用 curl）
+
+支持以下格式：
+- \"127.0.0.1:7890\"
+- \"http://127.0.0.1:7890\" 或 \"https://127.0.0.1:7890\"
+
+注意：本变量仅配置代理地址，不包含认证信息。"
+  :group 'achive
+  :type '(choice (const :tag "不使用（沿用全局设置）" nil)
+                 (string :tag "代理地址")))
+
+(defcustom achive-proxy-no-proxy "localhost,127.0.0.1"
+  "Achive 代理的 no_proxy 列表。
+
+该值会写入 `url-proxy-services' 的 \"no_proxy\" 项，格式与 Emacs 约定一致，
+通常为逗号分隔的主机名/网段列表。"
+  :group 'achive
+  :type 'string)
+
 
 (defcustom achive-colouring t
   "Whether to apply face.
 If it's nil will be low-key, you can peek at it at company time."
   :group 'achive
-  :type 'string)
+  :type 'boolean)
 
 (defcustom achive-chart-display-method 'buffer
   "图表显示方式。
-'buffer: 在独立缓冲区显示图表
-'posframe: 使用 posframe 在当前 point 位置显示图表"
+`buffer': 在独立缓冲区显示图表
+`posframe': 使用 posframe 在当前 point 位置显示图表"
   :group 'achive
   :type '(choice (const :tag "独立缓冲区" buffer)
                  (const :tag "Posframe 弹窗" posframe)))
@@ -475,6 +504,31 @@ CODES 中的 nil 与空字符串会被丢弃。"
              (lambda (s) (not (member (downcase s) index-down)))
              stocks))))
 
+(defun achive--normalize-proxy-address (proxy)
+  "将 PROXY 规范化为 \"host:port\" 形式。
+
+PROXY 可以是 nil，或形如 \"host:port\"、\"http://host:port\" 的字符串。
+返回规范化后的字符串，若输入无效则返回 nil。"
+  (when (and proxy (stringp proxy) (not (string-empty-p (string-trim proxy))))
+    (let* ((s (string-trim proxy))
+           (u (ignore-errors (url-generic-parse-url s))))
+      (cond
+       ;; 带 scheme 的 URL 形式
+       ((and u (url-type u) (url-host u) (url-portspec u))
+        (format "%s:%s" (url-host u) (url-portspec u)))
+       ;; 直接 host:port
+       ((string-match-p "\\`[^:/[:space:]]+:[0-9]+\\'" s)
+        s)
+       (t nil)))))
+
+(defun achive--proxy-services ()
+  "根据 `achive-proxy' 生成临时的 `url-proxy-services' 值。"
+  (let ((addr (achive--normalize-proxy-address achive-proxy)))
+    (when addr
+      (list (cons "http" addr)
+            (cons "https" addr)
+            (cons "no_proxy" (or achive-proxy-no-proxy ""))))))
+
 
 (defun achive-request (url callback)
   "Handle request by URL.
@@ -482,7 +536,8 @@ CODES 中的 nil 与空字符串会被丢弃。"
   (let ((url-request-method "GET")  ; 改为GET方法
         (url-request-extra-headers '(("Content-Type" . "application/javascript;charset=UTF-8")
                                      ("Referer" . "https://finance.sina.com.cn")
-                                     ("User-Agent" . "Mozilla/5.0"))))
+                                     ("User-Agent" . "Mozilla/5.0")))
+        (url-proxy-services (or (achive--proxy-services) url-proxy-services)))
     (url-retrieve url (lambda (status)
                         (let ((inhibit-message t))
                           (if (and (listp status) (plist-get status :error))
@@ -792,7 +847,7 @@ CODES: 股票代码字符串，多个代码用空格分隔。
   "根据 `achive-chart-display-method' 显示图表。
 IMAGE-DATA: 图片的原始数据。
 CODE: 股票代码。
-CHART-TYPE: 图表类型 ('daily 或 'min)。"
+CHART-TYPE: 图表类型（`daily' 或 `min'）。"
   (if (not (display-graphic-p))
       (message "achive: 当前为终端帧（-nw），无法内嵌显示图片；请使用带图形界面的 Emacs")
     (if (eq achive-chart-display-method 'posframe)
@@ -803,7 +858,7 @@ CHART-TYPE: 图表类型 ('daily 或 'min)。"
   "在独立缓冲区显示图表。
 IMAGE-DATA: 图片的原始数据。
 CODE: 股票代码。
-CHART-TYPE: 图表类型 ('daily 或 'min)。"
+CHART-TYPE: 图表类型（`daily' 或 `min'）。"
   (let ((buffer-name (format "*A Chive - %s Chart - %s*" (if (eq chart-type 'daily) "Daily" "Min") code))
         (max-image-size achive-max-image-size))
     (with-current-buffer (get-buffer-create buffer-name)
@@ -826,10 +881,13 @@ CHART-TYPE: 图表类型 ('daily 或 'min)。"
   (when (executable-find "curl")
     (with-temp-buffer
       (set-buffer-multibyte nil)
-      (let ((exit (call-process "curl" nil '(t nil) nil "-sL"
-                                "-A" "Mozilla/5.0 (compatible; Achive-Emacs)"
-                                "--connect-timeout" "15"
-                                url)))
+      (let* ((proxy (achive--normalize-proxy-address achive-proxy))
+             (args (append (list "-sL"
+                                 "-A" "Mozilla/5.0 (compatible; Achive-Emacs)"
+                                 "--connect-timeout" "15")
+                           (when proxy (list "-x" proxy))
+                           (list url)))
+             (exit (apply #'call-process "curl" nil '(t nil) nil args)))
         (when (and (eq exit 0) (> (buffer-size) 0))
           (buffer-substring-no-properties (point-min) (point-max)))))))
 
@@ -874,7 +932,7 @@ CHART-TYPE: 图表类型 ('daily 或 'min)。"
   "使用 posframe 在当前 point 位置显示图表。
 IMAGE-DATA: 图片的原始数据。
 CODE: 股票代码。
-CHART-TYPE: 图表类型 ('daily 或 'min)。"
+CHART-TYPE: 图表类型（`daily' 或 `min'）。"
   (require 'posframe)
   (let* ((buffer-name (format " *achive-chart-%s-%s*" (if (eq chart-type 'daily) "daily" "min") code))
          (buffer (get-buffer-create buffer-name))
@@ -1035,7 +1093,8 @@ CHART-TYPE: 图表类型，`daily' 为日线图，`min' 为分时图，默认为
   (setq tabulated-list-sort-key nil)
   (add-hook 'tabulated-list-revert-hook 'achive-refresh nil t)
   (tabulated-list-init-header)
-  (tablist-minor-mode))
+  (when (fboundp 'tablist-minor-mode)
+    (tablist-minor-mode)))
 
 (provide 'achive)
 ;;; achive.el ends here

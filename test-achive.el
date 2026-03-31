@@ -134,6 +134,44 @@
     (should (string= (achive-make-request-url api codes-multi)
                      "https://hq.sinajs.cn/list=sh000001,hk00700,gb_aapl"))))
 
+;;; 代理配置测试
+
+(ert-deftest test-achive-normalize-proxy-address ()
+  "测试代理地址规范化。"
+  (should (eq (achive--normalize-proxy-address nil) nil))
+  (should (eq (achive--normalize-proxy-address "") nil))
+  (should (string= (achive--normalize-proxy-address "127.0.0.1:7890") "127.0.0.1:7890"))
+  (should (string= (achive--normalize-proxy-address " http://127.0.0.1:7890 ") "127.0.0.1:7890"))
+  (should (string= (achive--normalize-proxy-address "https://proxy.example.com:8080") "proxy.example.com:8080"))
+  (should (eq (achive--normalize-proxy-address "not-a-proxy") nil)))
+
+(ert-deftest test-achive-proxy-services ()
+  "测试 `achive--proxy-services' 生成的 `url-proxy-services'。"
+  (let ((achive-proxy nil))
+    (should (eq (achive--proxy-services) nil)))
+  (let ((achive-proxy "127.0.0.1:7890")
+        (achive-proxy-no-proxy "localhost,127.0.0.1"))
+    (should (equal (achive--proxy-services)
+                   '(("http" . "127.0.0.1:7890")
+                     ("https" . "127.0.0.1:7890")
+                     ("no_proxy" . "localhost,127.0.0.1"))))))
+
+(ert-deftest test-achive-curl-chart-data-inject-proxy-arg ()
+  "测试走势图 curl 下载会注入 -x 代理参数。"
+  (let ((achive-proxy "127.0.0.1:7890")
+        (called-args nil))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_) t))
+              ((symbol-function 'call-process)
+               (lambda (_program _infile _destination _display &rest args)
+                 (setq called-args args)
+                 ;; 模拟 curl 成功并写入一些二进制内容
+                 (with-current-buffer (current-buffer)
+                   (insert "GIF89a"))
+                 0)))
+      (should (string-match-p "\\`GIF8[79]a" (achive--curl-chart-data "http://example.com/a.gif")))
+      (should (member "-x" called-args))
+      (should (member "127.0.0.1:7890" called-args)))))
+
 ;;; 工作函数测试
 
 (ert-deftest test-achive-working-time-p-multi-market ()
