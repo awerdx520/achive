@@ -46,7 +46,14 @@ Download el file to your load-path.
 | achive-search           | Search stocks by codes.                              |
 | achive-add              | Add favorite stocks by codes                         |
 | achive-remove           | Remove favorite stocks.                              |
+| achive-show-daily-chart | 展示当前行股票的日线走势图（快捷键 =d=）。           |
+| achive-show-min-chart   | 展示当前行股票的分时走势图（快捷键 =m=）。           |
 | achive-switch-colouring | Manual switch colouring. It's handy for emergencies. |
+
+#+BEGIN_QUOTE
+⚠️ *特别提醒：* 走势图功能（日线图/分时图）仅支持 A 股，港股和美股暂不支持。
+新浪图片接口（image.sinajs.cn）仅提供 A 股走势图数据，对港股（hk）和美股（us）代码无法返回有效图片。
+#+END_QUOTE
 
 * 构建和测试
 achive 包含完整的 Makefile 支持，方便构建、测试和安装。

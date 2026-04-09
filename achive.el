@@ -1034,10 +1034,13 @@ CHART-TYPE: 图表类型，`daily' 为日线图，`min' 为分时图，默认为
      ((not (and code (stringp code)))
       (message "achive: 请先选择一个股票 (当前模式: %s)" major-mode))
      (t
-      (let ((normalized-code (achive-normalize-code code)))
+      (let ((normalized-code (achive-normalize-code code))
+            (market (achive-get-market code)))
         (cond
          ((not normalized-code)
           (message "achive: 无效的股票代码: %s (normalized: %s)" code normalized-code))
+         ((memq market '(hk us))
+          (message "achive: 港股和美股暂不支持走势图展示（新浪图片接口仅提供 A 股走势图）"))
          (t
           (let* ((chart-kind (or chart-type 'daily))
                  (chart-suffix (if (eq chart-kind 'daily) "daily" "min"))
